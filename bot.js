@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Bot, InlineKeyboard } from 'grammy';
-import { norm, parseQueue, evaluate, describe } from './queue.js';
+import { norm, parseQueue, evaluate, describe, findVessel } from './queue.js';
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) throw new Error('BOT_TOKEN is required');
@@ -12,7 +12,7 @@ const MAX_WATCHES = Number(process.env.MAX_WATCHES || 5);
 const DATA_DIR = process.env.DATA_DIR || './data';
 const ALLOWED = (process.env.ALLOWED_CHAT_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
 
-// ---------- state (small JSON file; plenty for one group) ----------
+// ---------- state (small JSON file; plenty for a handful of people) ----------
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 let state = { chats: {} };
@@ -71,7 +71,7 @@ async function poll() {
 const bot = new Bot(TOKEN);
 const pendingLabels = new Map(); // key -> text as the user typed it
 
-// /id works anywhere so you can find your group's chat ID
+// /id works for anyone, so people can tell you their ID for ALLOWED_CHAT_IDS
 bot.command('id', (ctx) => ctx.reply(`Chat ID: ${ctx.chat.id}`));
 
 // Everything else is limited to the allowed chats
@@ -96,16 +96,16 @@ function addWatch(chatId, key, fallbackLabel) {
   if (watches.some((w) => w.key === key)) return 'Already watching that boat.';
   if (watches.length >= MAX_WATCHES) return `Limit reached (${MAX_WATCHES} boats). Use /unwatch to free a slot.`;
 
-  const v = latest?.vessels.find((x) => x.key === key);
+  const v = latest ? findVessel({ key }, latest.vessels) : null;
   if (v) {
-    watches.push({ key, label: v.name, present: true, queue: v.queue, position: v.position, status: v.status });
+    watches.push({ key, label: v.name, present: true, queue: v.queue, position: v.position, total: v.total, status: v.status, zone: v.zone, givenPosition: v.givenPosition });
     save();
-    return `🟢 ${v.name} is IN QUEUE\n${describe(v)}\n\nI'll message here when anything changes.`;
+    return `🟢 ${v.name} is IN QUEUE\n${describe(v)}\n\nI'll message you when anything changes.`;
   }
   const label = fallbackLabel || key;
   watches.push({ key, label, present: false });
   save();
-  return `👀 Watching for ${label}.\nNot in the queue right now — I'll scan every ${INTERVAL_MIN} min and message here when it appears.`;
+  return `👀 Watching for ${label}.\nNot in the queue right now — I'll scan every ${INTERVAL_MIN} min and message you when it appears.`;
 }
 
 bot.command('watch', async (ctx) => {
@@ -113,8 +113,8 @@ bot.command('watch', async (ctx) => {
   const q = norm(text);
   if (!q) return ctx.reply('Usage: /watch <boat name>\nExample: /watch furaaqu 2');
 
-  const matches = (latest?.vessels ?? []).filter((v) => v.key.includes(q));
-  const exact = matches.find((v) => v.key === q);
+  const matches = (latest?.vessels ?? []).filter((v) => v.nameKey.includes(q) || v.key.includes(q));
+  const exact = matches.find((v) => v.nameKey === q || v.key === q);
   if (exact || matches.length === 1) {
     return ctx.reply(addWatch(ctx.chat.id, (exact ?? matches[0]).key));
   }
